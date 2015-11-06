@@ -916,6 +916,28 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
         self.assertColumnExists(engine, 'shadow_instance_extra',
                                         'device_metadata')
 
+    def _pre_upgrade_335(self, engine):
+        # create a fake quota for checking whether child_hard_limits quota will
+        # take default value 0
+        quotas = oslodbutils.get_table(engine, 'quotas')
+        fake_quota = {'id': 1, 'resource': 'fake'}
+        quotas.insert().execute(fake_quota)
+
+    def _check_335(self, engine, data):
+        self.assertColumnExists(engine, 'quotas', 'child_hard_limits')
+        self.assertColumnExists(engine, 'shadow_quotas', 'child_hard_limits')
+        shadow_quotas = oslodbutils.get_table(engine, 'shadow_quotas')
+
+        quotas = oslodbutils.get_table(engine, 'quotas')
+        quota = quotas.select(
+            quotas.c.id == 1).execute().first()
+        self.assertEqual(0, quota.child_hard_limits)
+
+        self.assertIsInstance(quotas.c.child_hard_limits.type,
+                              sqlalchemy.types.Integer)
+        self.assertIsInstance(shadow_quotas.c.child_hard_limits.type,
+                              sqlalchemy.types.Integer)
+
 
 class TestNovaMigrationsSQLite(NovaMigrationsCheckers,
                                test_base.DbTestCase,
