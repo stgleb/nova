@@ -19,7 +19,13 @@
 
 from contextlib import contextmanager
 import copy
+import webob
 
+from keystoneclient.auth.identity.generic import token
+from keystoneclient import client
+from keystoneclient import exceptions
+from keystoneclient import session
+from oslo_config import cfg
 from keystoneauth1.access import service_catalog as ksa_service_catalog
 from keystoneauth1 import plugin
 from oslo_context import context
@@ -29,10 +35,12 @@ from oslo_utils import timeutils
 import six
 
 from nova import exception
+from nova.i18n import _LE
 from nova.i18n import _
 from nova import policy
 from nova import utils
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -281,6 +289,52 @@ class RequestContext(context.RequestContext):
         return "<Context %s>" % self.to_dict()
 
 
+class HierarchyInfo(context.RequestContext):
+    """Abstraction layer for Keystone V2 and V3 project objects"""
+
+    class GenericProjectInfo(object):
+        def __init__(self, project_id, project_keystone_api_version,
+                        project_parent_id=None, project_subtree=None):
+            self.project_id = project_id
+            self.keystone_api_version = project_keystone_api_version
+            self.parent_id = project_parent_id
+            self.subtree = project_subtree
+
+    def _keystone_client(self, context):
+        auth_plugin = token.Token(
+            auth_url=CONF.keystone_authtoken.auth_uri,
+            token=context.auth_token,
+            project_id=context.project_id)
+        client_session = session.Session(auth=auth_plugin)
+        return client.Client(auth_url=CONF.keystone_authtoken.auth_uri,
+                             session=client_session)
+
+    def get_project(self, context, project_id, subtree=False):
+        """Helper function for return the entire project project, with the
+        parent_id and subtree information.
+        :param context: The request context, for access checks
+        :param project_id: The ID of the project whose parent_id
+                           needs to be found out.
+        :param subtree: If true, return a list of ids for child projects
+        """
+        try:
+            keystone = self._keystone_client(context)
+            project = self.GenericProjectInfo(project_id,
+                                              keystone.version)
+            if keystone.version == 'v3':
+                project = keystone.projects.get(project_id,
+                                                subtree_as_ids=subtree)
+        except exceptions.NotFound:
+            msg = (_("Tenant ID: %s does not exist.") % project_id)
+            raise webob.exc.HTTPNotFound(explanation=msg)
+        except exceptions.Forbidden:
+            LOG.error(_LE("Failed to get_project, user with tenant id: %s "
+                          "may not have necessary permissions or "
+                          "correct token scope.") % project_id)
+            project = None
+        return project
+
+
 def get_admin_context(read_deleted="no"):
     return RequestContext(user_id=None,
                           project_id=None,
@@ -339,6 +393,8 @@ def authorize_quota_class_context(context, class_name):
             raise exception.Forbidden()
         elif context.quota_class != class_name:
             raise exception.Forbidden()
+
+KEYSTONE = HierarchyInfo()
 
 
 @contextmanager

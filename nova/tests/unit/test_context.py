@@ -13,6 +13,11 @@
 #    under the License.
 
 import mock
+import uuid
+
+from keystonemiddleware import auth_token
+from oslo_config import cfg
+from oslo_config import fixture as config_fixture
 from oslo_context import context as o_context
 from oslo_context import fixture as o_fixture
 
@@ -20,6 +25,8 @@ from nova import context
 from nova import exception
 from nova import objects
 from nova import test
+
+CONF = cfg.CONF
 
 
 class ContextTestCase(test.NoDBTestCase):
@@ -290,3 +297,86 @@ class ContextTestCase(test.NoDBTestCase):
         with context.target_cell(ctxt, mapping):
             self.assertEqual(ctxt.db_connection, mock.sentinel.cm)
         self.assertEqual(mock.sentinel.db_conn, ctxt.db_connection)
+
+
+class HierarhcyInfoTestCase(test.NoDBTestCase):
+
+    class FakeProject(object):
+
+        def __init__(self, project_id='foo', parent_id=None):
+            self.project_id = project_id
+            self.parent_id = parent_id
+            self.subtree = None
+
+    def setUp(self):
+        super(HierarhcyInfoTestCase, self).setUp()
+        self.keystone = context.KEYSTONE
+        self.req = mock.Mock()
+        self.req.environ = {'nova.context': context.get_admin_context()}
+        self.req.environ['nova.context'].is_admin = True
+        self.req.environ['nova.context'].auth_token = uuid.uuid4().hex
+        self.auth_url = 'http://identity:5000/v3'
+        service = {'id': '123',
+                    'name': 'keystone',
+                    'links': {'self': self.auth_url},
+                    'type': 'key-manager'}
+        self.req.environ['nova.context'].service_catalog = [service]
+        # NOTE: changed from auth_token.CONF
+        self.fixture = self.useFixture(config_fixture.Config(CONF))
+        self.fixture.config(auth_uri=self.auth_url, group='keystone_authtoken')
+        self._create_project_hierarchy()
+
+    def _create_project_hierarchy(self):
+        """Sets an environment used for nested quotas tests.
+        Create a project hierarchy such as follows:
+        +-----------+
+        |           |
+        |     A     |
+        |    / \    |
+        |   B   C   |
+        |  /        |
+        | D         |
+        +-----------+
+        """
+        self.A = self.FakeProject(project_id=uuid.uuid4().hex, parent_id=None)
+        self.B = self.FakeProject(project_id=uuid.uuid4().hex,
+                                  parent_id=self.A.project_id)
+        self.C = self.FakeProject(project_id=uuid.uuid4().hex,
+                                  parent_id=self.A.project_id)
+        self.D = self.FakeProject(project_id=uuid.uuid4().hex,
+                                  parent_id=self.B.project_id)
+
+        # update projects subtrees
+        self.B.subtree = {self.D.project_id: self.D.subtree}
+        self.A.subtree = {self.B.project_id: self.B.subtree,
+                          self.C.project_id: self.C.subtree}
+
+        # project_by_id attribute is used to recover a project based on its id.
+        self.project_by_id = {self.A.project_id: self.A,
+                              self.B.project_id: self.B,
+                              self.C.project_id: self.C,
+                              self.D.project_id: self.D}
+
+        self.parent_by_id = {self.A.project_id: self.A.parent_id,
+                             self.B.project_id: self.B.parent_id,
+                             self.C.project_id: self.C.parent_id,
+                             self.D.project_id: self.D.parent_id}
+
+    def _get_project(self, context, project_id, subtree=False):
+        return self.project_by_id.get(project_id, self.FakeProject())
+
+    def test_get_parent_project(self):
+        self.keystone.get_project = mock.Mock()
+        self.keystone.get_project.side_effect = self._get_project
+        ctx = self.req.environ['nova.context']
+        result = self.keystone.get_project(ctx, self.B.project_id)
+        self.assertEqual(result.parent_id, self.A.project_id)
+
+    def test_get_subtree(self):
+        self.keystone.get_project = mock.Mock()
+        self.keystone.get_project.side_effect = self._get_project
+        ctx = self.req.environ['nova.context']
+        result = self.keystone.get_project(ctx,
+                                           self.A.project_id,
+                                           subtree=True)
+        self.assertEqual(result.subtree, self.A.subtree)
