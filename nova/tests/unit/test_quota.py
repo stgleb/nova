@@ -285,8 +285,9 @@ class FakeDriver(object):
         except KeyError:
             raise exception.QuotaClassNotFound(class_name=quota_class)
 
-    def get_defaults(self, context, resources):
-        self.called.append(('get_defaults', context, resources))
+    def get_defaults(self, context, resources, parent_project_id=None):
+        self.called.append(('get_defaults', context, resources,
+                            parent_project_id))
         return resources
 
     def get_class_quotas(self, context, resources, quota_class,
@@ -304,10 +305,10 @@ class FakeDriver(object):
 
     def get_project_quotas(self, context, resources, project_id,
                            quota_class=None, defaults=True, usages=True,
-                           remains=False):
+                           remains=False, parent_project_id=None):
         self.called.append(('get_project_quotas', context, resources,
                             project_id, quota_class, defaults, usages,
-                            remains))
+                            remains, parent_project_id))
         return resources
 
     def limit_check(self, context, resources, values, project_id=None,
@@ -412,6 +413,16 @@ class BaseResourceTestCase(test.TestCase):
         quota_value = resource.quota(driver, context)
 
         self.assertEqual(quota_value, 15)
+
+    def test_quota_override_subproject_no_class(self):
+        self.flags(quota_instances=10)
+        resource = quota.BaseResource('test_resource', 'quota_instances',
+                                      parent_project_id='test_parent_project')
+        driver = FakeDriver()
+        context = FakeContext('test_project', None)
+        quota_value = resource.quota(driver, context)
+
+        self.assertEqual(quota_value, 0)
 
     def test_quota_override_project_with_class(self):
         self.flags(quota_instances=10)
@@ -577,11 +588,13 @@ class QuotaEngineTestCase(test.TestCase):
     def test_get_defaults(self):
         context = FakeContext(None, None)
         driver = FakeDriver()
+        parent_project_id = None
         quota_obj = self._make_quota_obj(driver)
         result = quota_obj.get_defaults(context)
 
         self.assertEqual(driver.called, [
-                ('get_defaults', context, quota_obj._resources),
+                ('get_defaults', context, quota_obj._resources,
+                 parent_project_id),
                 ])
         self.assertEqual(result, quota_obj._resources)
 
@@ -625,6 +638,7 @@ class QuotaEngineTestCase(test.TestCase):
     def test_get_project_quotas(self):
         context = FakeContext(None, None)
         driver = FakeDriver()
+        parent_project_id = None
         quota_obj = self._make_quota_obj(driver)
         result1 = quota_obj.get_project_quotas(context, 'test_project')
         result2 = quota_obj.get_project_quotas(context, 'test_project',
@@ -634,9 +648,37 @@ class QuotaEngineTestCase(test.TestCase):
 
         self.assertEqual(driver.called, [
                 ('get_project_quotas', context, quota_obj._resources,
-                 'test_project', None, True, True, False),
+                 'test_project', None, True, True, False,
+                 parent_project_id),
                 ('get_project_quotas', context, quota_obj._resources,
-                 'test_project', 'test_class', False, False, False),
+                 'test_project', 'test_class', False, False, False,
+                 parent_project_id),
+                ])
+        self.assertEqual(result1, quota_obj._resources)
+        self.assertEqual(result2, quota_obj._resources)
+
+    def test_get_subproject_quotas(self):
+        context = FakeContext(None, None)
+        driver = FakeDriver()
+        parent_project_id = 'test_parent_project_id'
+        quota_obj = self._make_quota_obj(driver)
+        result1 = quota_obj.get_project_quotas(context, 'test_project',
+                                               parent_project_id=
+                                               parent_project_id)
+        result2 = quota_obj.get_project_quotas(context, 'test_project',
+                                               quota_class='test_class',
+                                               defaults=False,
+                                               usages=False,
+                                               parent_project_id=
+                                               parent_project_id)
+
+        self.assertEqual(driver.called, [
+                ('get_project_quotas', context, quota_obj._resources,
+                 'test_project', None, True, True, False,
+                 parent_project_id),
+                ('get_project_quotas', context, quota_obj._resources,
+                 'test_project', 'test_class', False, False, False,
+                 parent_project_id),
                 ])
         self.assertEqual(result1, quota_obj._resources)
         self.assertEqual(result2, quota_obj._resources)
@@ -854,6 +896,29 @@ class DbQuotaDriverTestCase(test.TestCase):
                 key_pairs=100,
                 server_groups=10,
                 server_group_members=10,
+                ))
+
+    def test_get_subproject_defaults(self):
+        # Test subproject default values
+        parent_project_id = 'test_parent_project_id'
+        result = self.driver.get_defaults(None, quota.QUOTAS._resources,
+                                          parent_project_id)
+
+        self.assertEqual(result, dict(
+                instances=0,
+                cores=0,
+                ram=0,
+                floating_ips=0,
+                fixed_ips=0,
+                metadata_items=0,
+                injected_files=0,
+                injected_file_content_bytes=0,
+                injected_file_path_bytes=0,
+                security_groups=0,
+                security_group_rules=0,
+                key_pairs=0,
+                server_groups=0,
+                server_group_members=0,
                 ))
 
     def _stub_quota_class_get_default(self):
@@ -1107,6 +1172,30 @@ class DbQuotaDriverTestCase(test.TestCase):
         self._stub_quota_class_get_all_by_name()
         self._stub_quota_class_get_default()
 
+    def _stub_get_by_subproject(self):
+        def fake_qgabp(context, project_id):
+            self.calls.append('quota_get_all_by_project')
+            self.assertEqual(project_id, 'test_project')
+            return dict(
+                cores=10,
+                injected_files=2,
+                injected_file_path_bytes=127,
+                )
+
+        def fake_qugabp(context, project_id):
+            self.calls.append('quota_usage_get_all_by_project')
+            self.assertEqual(project_id, 'test_project')
+            return dict(cores=dict(in_use=4, reserved=4),)
+
+        def fake_quota_get_all(context, project_id):
+            self.calls.append('quota_get_all')
+            self.assertEqual(project_id, 'test_project')
+            return []
+
+        self.stubs.Set(db, 'quota_get_all_by_project', fake_qgabp)
+        self.stubs.Set(db, 'quota_usage_get_all_by_project', fake_qugabp)
+        self.stubs.Set(db, 'quota_get_all', fake_quota_get_all)
+
     def test_get_project_quotas(self):
         self.maxDiff = None
         self._stub_get_by_project()
@@ -1188,6 +1277,92 @@ class DbQuotaDriverTestCase(test.TestCase):
                     ),
                 server_group_members=dict(
                     limit=10,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                ))
+
+    def test_get_subproject_quotas(self):
+        self.maxDiff = None
+        self._stub_get_by_subproject()
+        parent_project_id = 'test_parent_project_id'
+        result = self.driver.get_project_quotas(
+            FakeContext('test_project', None),
+            quota.QUOTAS._resources, 'test_project',
+            parent_project_id=parent_project_id)
+
+        self.assertEqual(self.calls, [
+                'quota_get_all_by_project',
+                'quota_usage_get_all_by_project',
+                ])
+        self.assertEqual(result, dict(
+                instances=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                cores=dict(
+                    limit=10,
+                    in_use=4,
+                    reserved=4,
+                    ),
+                ram=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+               floating_ips=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                fixed_ips=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                metadata_items=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                injected_files=dict(
+                    limit=2,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                injected_file_content_bytes=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                injected_file_path_bytes=dict(
+                    limit=127,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                security_groups=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                security_group_rules=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                key_pairs=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_groups=dict(
+                    limit=0,
+                    in_use=0,
+                    reserved=0,
+                    ),
+                server_group_members=dict(
+                    limit=0,
                     in_use=0,
                     reserved=0,
                     ),
@@ -1817,9 +1992,12 @@ class DbQuotaDriverTestCase(test.TestCase):
             return {'floating_ips': 20}
 
         def fake_get_project_quotas(dbdrv, context, resources, project_id,
-                                    quota_class=None, defaults=True,
-                                    usages=True, remains=False,
-                                    project_quotas=None):
+                                    quota_class=None,
+                                    defaults=True,
+                                    usages=True,
+                                    remains=False,
+                                    project_quotas=None,
+                                    parent_project_id=None):
             self.calls.append('get_project_quotas')
             result = {}
             for k, v in resources.items():
@@ -1876,11 +2054,12 @@ class DbQuotaDriverTestCase(test.TestCase):
         self.stub_out('nova.db.quota_get_all_by_project_and_user',
                        fake_qgabpau)
 
-    def test_get_settable_quotas_with_user(self):
+    def test_get_settable_quotas_with_user(self, parent_project_id=None):
         self._stub_get_settable_quotas()
         result = self.driver.get_settable_quotas(
             FakeContext('test_project', 'test_class'),
-            quota.QUOTAS._resources, 'test_project', user_id='test_user')
+            quota.QUOTAS._resources, 'test_project', user_id='test_user',
+            parent_project_id=parent_project_id)
 
         self.assertEqual(self.calls, [
                 'quota_get_all_by_project',
@@ -2091,7 +2270,8 @@ class DbQuotaDriverTestCase(test.TestCase):
         def fake_get_project_quotas(dbdrv, context, resources, project_id,
                                     quota_class=None, defaults=True,
                                     usages=True, remains=False,
-                                    project_quotas=None):
+                                    project_quotas=None,
+                                    parent_project_id=None):
             self.calls.append('get_project_quotas')
             return {k: dict(limit=v.default) for k, v in resources.items()}
 

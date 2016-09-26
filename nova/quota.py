@@ -57,20 +57,25 @@ class DbQuotaDriver(object):
 
         return db.quota_class_get(context, quota_class, resource)
 
-    def get_defaults(self, context, resources):
+    def get_defaults(self, context, resources, parent_project_id=None):
         """Given a list of resources, retrieve the default quotas.
         Use the class quotas named `_DEFAULT_QUOTA_NAME` as default quotas,
         if it exists.
 
         :param context: The request context, for access checks.
         :param resources: A dictionary of the registered resources.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
 
         quotas = {}
-        default_quotas = db.quota_class_get_default(context)
+        default_quotas = {}
+        if not parent_project_id:
+            default_quotas = db.quota_class_get_default(context)
         for resource in resources.values():
             quotas[resource.name] = default_quotas.get(resource.name,
-                                                       resource.default)
+                                                       (0 if parent_project_id
+                                                       else resource.default))
 
         return quotas
 
@@ -99,7 +104,7 @@ class DbQuotaDriver(object):
 
     def _process_quotas(self, context, resources, project_id, quotas,
                         quota_class=None, defaults=True, usages=None,
-                        remains=False):
+                        remains=False, parent_project_id=None):
         modified_quotas = {}
         # Get the quotas for the appropriate class.  If the project ID
         # matches the one in the context, we use the quota_class from
@@ -112,7 +117,8 @@ class DbQuotaDriver(object):
         else:
             class_quotas = {}
 
-        default_quotas = self.get_defaults(context, resources)
+        default_quotas = self.get_defaults(context, resources,
+                                           parent_project_id=parent_project_id)
 
         for resource in resources.values():
             # Omit default/quota class values
@@ -194,7 +200,8 @@ class DbQuotaDriver(object):
 
     def get_project_quotas(self, context, resources, project_id,
                            quota_class=None, defaults=True,
-                           usages=True, remains=False, project_quotas=None):
+                           usages=True, remains=False, project_quotas=None,
+                           parent_project_id=None):
         """Given a list of resources, retrieve the quotas for the given
         project.
 
@@ -215,6 +222,8 @@ class DbQuotaDriver(object):
         :param remains: If True, the current remains of the project will
                         will be returned.
         :param project_quotas: Quotas dictionary for the specified project.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
         project_quotas = project_quotas or db.quota_get_all_by_project(
             context, project_id)
@@ -226,7 +235,8 @@ class DbQuotaDriver(object):
         return self._process_quotas(context, resources, project_id,
                                     project_quotas, quota_class,
                                     defaults=defaults, usages=project_usages,
-                                    remains=remains)
+                                    remains=remains,
+                                    parent_project_id=parent_project_id)
 
     def _is_unlimited_value(self, v):
         """A helper method to check for unlimited value.
@@ -253,7 +263,7 @@ class DbQuotaDriver(object):
         return v1 - v2
 
     def get_settable_quotas(self, context, resources, project_id,
-                            user_id=None):
+                            user_id=None, parent_project_id=None):
         """Given a list of resources, retrieve the range of settable quotas for
         the given user or project.
 
@@ -261,13 +271,15 @@ class DbQuotaDriver(object):
         :param resources: A dictionary of the registered resources.
         :param project_id: The ID of the project to return quotas for.
         :param user_id: The ID of the user to return quotas for.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
 
         settable_quotas = {}
         db_proj_quotas = db.quota_get_all_by_project(context, project_id)
         project_quotas = self.get_project_quotas(context, resources,
-                                                 project_id, remains=True,
-                                                 project_quotas=db_proj_quotas)
+            project_id, remains=True, project_quotas=db_proj_quotas,
+            parent_project_id=parent_project_id)
         if user_id:
             setted_quotas = db.quota_get_all_by_project_and_user(context,
                                                      project_id,
@@ -319,7 +331,7 @@ class DbQuotaDriver(object):
         return syncable_resources
 
     def _get_quotas(self, context, resources, keys, has_sync, project_id=None,
-                    user_id=None, project_quotas=None):
+                    user_id=None, project_quotas=None, parent_project_id=None):
         """A helper method which retrieves the quotas for the specific
         resources identified by keys, and which apply to the current
         context.
@@ -338,6 +350,8 @@ class DbQuotaDriver(object):
                         is admin and admin wants to impact on
                         common user.
         :param project_quotas: Quotas dictionary for the specified project.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
 
         # Filter resources
@@ -368,11 +382,10 @@ class DbQuotaDriver(object):
             LOG.debug('Getting quotas for project %(project_id)s. Resources: '
                       '%(keys)s', {'project_id': project_id, 'keys': keys})
             # Grab and return the quotas (without usages)
-            quotas = self.get_project_quotas(context, sub_resources,
-                                             project_id,
-                                             context.quota_class,
-                                             usages=False,
-                                             project_quotas=project_quotas)
+            quotas = self.get_project_quotas(
+                context, sub_resources, project_id, context.quota_class,
+                usages=False, project_quotas=project_quotas,
+                parent_project_id=parent_project_id)
 
         return {k: v['limit'] for k, v in quotas.items()}
 
@@ -998,17 +1011,20 @@ class NoopQuotaDriver(object):
 class BaseResource(object):
     """Describe a single resource for quota checking."""
 
-    def __init__(self, name, flag=None):
+    def __init__(self, name, flag=None, parent_project_id=None):
         """Initializes a Resource.
 
         :param name: The name of the resource, i.e., "instances".
         :param flag: The name of the flag or configuration option
                      which specifies the default value of the quota
                      for this resource.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
 
         self.name = name
         self.flag = flag
+        self.parent_project_id = parent_project_id
 
     def quota(self, driver, context, **kwargs):
         """Given a driver and context, obtain the quota for this
@@ -1059,6 +1075,9 @@ class BaseResource(object):
     @property
     def default(self):
         """Return the default value of the quota."""
+
+        if self.parent_project_id:
+            return 0
 
         return CONF[self.flag] if self.flag else -1
 
@@ -1198,13 +1217,16 @@ class QuotaEngine(object):
 
         return self._driver.get_by_class(context, quota_class, resource)
 
-    def get_defaults(self, context):
+    def get_defaults(self, context, parent_project_id=None):
         """Retrieve the default quotas.
 
         :param context: The request context, for access checks.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
 
-        return self._driver.get_defaults(context, self._resources)
+        return self._driver.get_defaults(context, self._resources,
+                                         parent_project_id=parent_project_id)
 
     def get_class_quotas(self, context, quota_class, defaults=True):
         """Retrieve the quotas for the given quota class.
@@ -1245,7 +1267,8 @@ class QuotaEngine(object):
                                             usages=usages)
 
     def get_project_quotas(self, context, project_id, quota_class=None,
-                           defaults=True, usages=True, remains=False):
+                           defaults=True, usages=True, remains=False,
+                           parent_project_id=None):
         """Retrieve the quotas for the given project.
 
         :param context: The request context, for access checks.
@@ -1261,14 +1284,14 @@ class QuotaEngine(object):
                        will also be returned.
         :param remains: If True, the current remains of the project will
                         will be returned.
+        :param parent_project_id: The id of the current project's parent,
+                                  if any.
         """
 
-        return self._driver.get_project_quotas(context, self._resources,
-                                              project_id,
-                                              quota_class=quota_class,
-                                              defaults=defaults,
-                                              usages=usages,
-                                              remains=remains)
+        return self._driver.get_project_quotas(
+            context, self._resources, project_id, quota_class=quota_class,
+            defaults=defaults, usages=usages, remains=remains,
+            parent_project_id=parent_project_id)
 
     def get_settable_quotas(self, context, project_id, user_id=None):
         """Given a list of resources, retrieve the range of settable quotas for

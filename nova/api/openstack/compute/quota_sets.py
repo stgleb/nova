@@ -73,12 +73,15 @@ class QuotaSetsController(wsgi.Controller):
                    {'limit': limit, 'resource': resource, 'maximum': maximum})
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
-    def _get_quotas(self, context, id, user_id=None, usages=False):
+    def _get_quotas(self, context, id, user_id=None, usages=False,
+                    parent_project_id=None):
         if user_id:
             values = QUOTAS.get_user_quotas(context, id, user_id,
                                             usages=usages)
         else:
-            values = QUOTAS.get_project_quotas(context, id, usages=usages)
+            values = QUOTAS.get_project_quotas(
+                context, id, usages=usages,
+                parent_project_id=parent_project_id)
 
         if usages:
             return values
