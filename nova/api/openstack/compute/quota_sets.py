@@ -13,7 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_utils import strutils
+import nova.conf
 import six
 import six.moves.urllib.parse as urlparse
 import webob
@@ -26,18 +26,21 @@ from nova.api.openstack.compute.schemas import quota_sets
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova.api import validation
-import nova.conf
+# from nova.db.sqlalchemy import api as sqlalchemy_api
+from nova import context
+from nova import db
 from nova import exception
 from nova.i18n import _
 from nova import objects
 from nova.policies import quota_sets as qs_policies
 from nova import quota
-
+from nova import utils
+from oslo_utils import strutils
 
 CONF = nova.conf.CONF
 ALIAS = "os-quota-sets"
 QUOTAS = quota.QUOTAS
-
+KEYSTONE = context.KEYSTONE
 FILTERED_QUOTAS = ["fixed_ips", "floating_ips", "networks",
                    "security_group_rules", "security_groups"]
 
@@ -56,6 +59,73 @@ class QuotaSetsController(wsgi.Controller):
                     resource in quota_set):
                 result[resource] = quota_set[resource]
         return dict(quota_set=result)
+
+    def _validate_quota_hierarchy(self, quota, key, project_quotas=None,
+                                  parent_project_quotas=None):
+        limit = utils.validate_integer(quota[key], key, min_value=-1,
+                                       max_value=db.MAX_INT)
+        # NOTE: -1 is a flag value for unlimited
+        if limit < -1:
+            msg = (_("Quota limit %(limit)s for %(key)s "
+                     "must be -1 or greater.") %
+                   {'limit': limit, 'key': key})
+            raise webob.exc.HTTPBadRequest(explanation=msg)
+
+        if parent_project_quotas:
+            free_quota = (parent_project_quotas[key]['limit'] -
+                          parent_project_quotas[key]['in_use'] -
+                          parent_project_quotas[key]['reserved'] -
+                          parent_project_quotas[key]['child_hard_limits'])
+
+            current = 0
+            if project_quotas.get(key):
+                current = project_quotas[key]['limit']
+
+            if limit - current > free_quota:
+                msg = _("Free quota available is %s.") % free_quota
+                raise webob.exc.HTTPBadRequest(explanation=msg)
+        return limit
+
+    def _is_descendant(self, target_project_id, subtree):
+        if subtree is not None:
+            for key, value in subtree.items():
+                if key == target_project_id:
+                    return True
+                if self._is_descendant(target_project_id, value):
+                    return True
+        return False
+
+    def _authorize_update_or_delete(self, context_project,
+                                    target_project_id,
+                                    parent_id):
+        """Checks if update or delete are allowed in the current hierarchy.
+
+        With hierarchical projects, only the admin of the parent or the root
+        project has privilege to perform quota update and delete operations.
+
+        :param context_project: The project in which the user is scoped to.
+        :param target_project_id: The id of the project in which the
+                                  user want to perform an update or
+                                  delete operation.
+        :param parent_id: The parent id of the project in which the user
+                          want to perform an update or delete operation.
+        """
+        if context_project.parent_id and parent_id != context_project.id:
+            msg = _("Update and delete quota operations can only be made "
+                    "by an admin of immediate parent or by the CLOUD admin.")
+            raise webob.exc.HTTPForbidden(explanation=msg)
+
+        if context_project.id != target_project_id:
+            if not self._is_descendant(target_project_id,
+                                       context_project.subtree):
+                msg = _("Update and delete quota operations can only be made "
+                        "to projects in the same hierarchy of the project in "
+                        "which users are scoped to.")
+                raise webob.exc.HTTPForbidden(explanation=msg)
+        else:
+            msg = _("Update and delete quota operations can only be made "
+                    "by an admin of immediate parent or by the CLOUD admin.")
+            raise webob.exc.HTTPForbidden(explanation=msg)
 
     def _validate_quota_limit(self, resource, limit, minimum, maximum):
         def conv_inf(value):
@@ -87,6 +157,37 @@ class QuotaSetsController(wsgi.Controller):
             return values
         else:
             return {k: v['limit'] for k, v in values.items()}
+
+    def _authorize_show(self, context_project, target_project):
+        """Checks if show is allowed in the current hierarchy.
+
+        With hierarchical projects, are allowed to perform quota show operation
+        users with admin role in, at least, one of the following projects: the
+        current project; the immediate parent project; or the root project.
+
+        :param context_project: The project in which the user
+                                is scoped to.
+        :param target_project: The project in which the user wants
+                               to perform a show operation.
+        """
+        if target_project.parent_id:
+            if target_project.id != context_project.id:
+                if not self._is_descendant(target_project.id,
+                                           context_project.subtree):
+                    msg = _("Show operations can only be made to projects in "
+                            "the same hierarchy of the project in which users "
+                            "are scoped to.")
+                    raise webob.exc.HTTPForbidden(explanation=msg)
+                if context_project.id != target_project.parent_id:
+                    if context_project.parent_id:
+                        msg = _("Only users with token scoped to immediate "
+                                "parents or root projects are allowed to see "
+                                "its children quotas.")
+                        raise webob.exc.HTTPForbidden(explanation=msg)
+        elif context_project.parent_id:
+            msg = _("An user with a token scoped to a subproject is not "
+                    "allowed to see the quota of its parents.")
+            raise webob.exc.HTTPForbidden(explanation=msg)
 
     @wsgi.Controller.api_version("2.1", MAX_PROXY_API_SUPPORT_VERSION)
     @extensions.expected_errors(())

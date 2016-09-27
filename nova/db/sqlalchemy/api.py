@@ -3360,7 +3360,8 @@ def quota_get_per_project_resources():
 
 
 @main_context_manager.writer
-def quota_create(context, project_id, resource, limit, user_id=None):
+def quota_create(context, project_id, resource, limit, user_id=None,
+                 child_hard_limits=0):
     per_user = user_id and resource not in PER_PROJECT_QUOTAS
     quota_ref = models.ProjectUserQuota() if per_user else models.Quota()
     if per_user:
@@ -3368,6 +3369,7 @@ def quota_create(context, project_id, resource, limit, user_id=None):
     quota_ref.project_id = project_id
     quota_ref.resource = resource
     quota_ref.hard_limit = limit
+    quota_ref.child_hard_limits = child_hard_limits
     try:
         quota_ref.save(context.session)
     except db_exc.DBDuplicateEntry:
@@ -3395,6 +3397,30 @@ def quota_update(context, project_id, resource, limit, user_id=None):
 
 
 ###################
+
+@require_context
+@main_context_manager.reader
+def quota_allocated_get_all_by_project(context, project_id):
+    rows = model_query(context, models.Quota, read_deleted='no').filter_by(
+        project_id=project_id).all()
+    result = {'project_id': project_id}
+    for row in rows:
+        result[row.resource] = row.child_hard_limits
+    return result
+
+
+@require_context
+def quota_allocated_update(context, project_id, resource, child_hard_limits):
+    session = context.session
+    model = models.Quota
+    query = model_query(context, model). \
+        filter_by(project_id=project_id). \
+        filter_by(resource=resource)
+    with session.begin():
+        result = query.update({'child_hard_limits': child_hard_limits})
+        if not result:
+            raise exception.ProjectQuotaNotFound(project_id=project_id)
+        return result
 
 
 @require_context
