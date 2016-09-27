@@ -1293,7 +1293,8 @@ class QuotaEngine(object):
             defaults=defaults, usages=usages, remains=remains,
             parent_project_id=parent_project_id)
 
-    def get_settable_quotas(self, context, project_id, user_id=None):
+    def get_settable_quotas(self, context, project_id, user_id=None,
+                            parent_project_id=None):
         """Given a list of resources, retrieve the range of settable quotas for
         the given user or project.
 
@@ -1304,7 +1305,9 @@ class QuotaEngine(object):
 
         return self._driver.get_settable_quotas(context, self._resources,
                                                 project_id,
-                                                user_id=user_id)
+                                                user_id=user_id,
+                                                parent_project_id=
+                                                parent_project_id)
 
     def count(self, context, resource, *args, **kwargs):
         """Count a resource.

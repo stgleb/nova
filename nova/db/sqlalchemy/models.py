@@ -441,9 +441,10 @@ class Quota(BASE, NovaBase, models.SoftDeleteMixin):
     resource = Column(String(255), nullable=False)
     hard_limit = Column(Integer)
 
-    # child_hard_limits is the sum of the quota hard_limit values of immediate child
-    # projects. It defaults to 0, since it will be zero till the parent project
-    # allocated a finite quota to its immediate child projects
+    # child_hard_limits is the sum of the quota hard_limit values of
+    # immediate child projects. It defaults to 0, since it will be zero
+    # till the parent project allocated a finite quota to its immediate
+    # child projects
     child_hard_limits = Column(Integer, default=0)
 
 
