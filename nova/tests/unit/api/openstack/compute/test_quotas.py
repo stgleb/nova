@@ -163,11 +163,43 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
 
         self.assertEqual(res_dict, expected)
 
-    def test_quotas_show(self):
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_show")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_format_quota_set")
+    def test_quotas_show(self, format_quotas_mock, get_project_mock,
+                         authorize_mock):
+        class FakeProject(object):
+            def __init__(self, project_id, parent_id=None):
+                self.id = project_id
+                self.parent_id = parent_id
+                                
+        # Note: controller adds some bullshit in response
+        quotas = {'quota_set': {'cores': 20,
+                                'fixed_ips': -1,
+                                'floating_ips': 10,
+                                'id': '1234',
+                                'injected_file_content_bytes': 10240,
+                                'injected_file_path_bytes': 255,
+                                'injected_files': 5,
+                                'instances': 10,
+                                'key_pairs': 100,
+                                'metadata_items': 128,
+                                'ram': 51200,
+                                'security_group_rules': 20}}
+
+        project = FakeProject(1234, 1234)
+        get_project_mock.return_value = project
+        format_quotas_mock.return_value = quotas
+        authorize_mock.return_value = True
+
         req = self._get_http_request()
         res_dict = self.controller.show(req, 1234)
 
         ref_quota_set = quota_set('1234', self.include_server_group_quotas)
+        self.assertEqual(format_quotas_mock.called, 1)
         self.assertEqual(res_dict, ref_quota_set)
 
     def test_quotas_update(self):
@@ -557,7 +589,18 @@ class QuotaSetsTestV236(test.NoDBTestCase):
         for filtered in self.filtered_quotas:
             self.assertIn(filtered, res_dict['quota_set'])
 
-    def test_quotas_show_filtered(self):
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_show")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    def test_quotas_show_filtered(self, authorize_mock, get_project_mock):
+        class FakeProject(object):
+            def __init__(self, id):
+                self.id = id
+
+        project = FakeProject(1)
+        get_project_mock.return_value = project
+
         self._ensure_filtered_quotas_existed_in_old_api()
         res_dict = self.controller.show(self.req, 1234)
         for filtered in self.filtered_quotas:

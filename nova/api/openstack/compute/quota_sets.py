@@ -18,6 +18,7 @@ import six
 import six.moves.urllib.parse as urlparse
 import webob
 
+from keystoneclient import exceptions as ksc_exceptions
 from nova.api.openstack.api_version_request \
     import MAX_PROXY_API_SUPPORT_VERSION
 from nova.api.openstack.api_version_request \
@@ -199,13 +200,46 @@ class QuotaSetsController(wsgi.Controller):
         return self._show(req, id, FILTERED_QUOTAS)
 
     def _show(self, req, id, filtered_quotas):
+        """Show quota for a particular tenant
+
+        This works for hierarchical and non-hierarchical projects. For
+        hierarchical projects admin of current project, immediate
+        parent of the project or the CLOUD admin are able to perform
+        a show.
+
+        :param req: request
+        :param id: target project id that needs to be updated
+        :param filtered_quotas: list of quotas to be filtered
+        """
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'show', {'project_id': id})
         params = urlparse.parse_qs(req.environ.get('QUERY_STRING', ''))
         user_id = params.get('user_id', [None])[0]
-        return self._format_quota_set(id,
-            self._get_quotas(context, id, user_id=user_id),
-            filtered_quotas=filtered_quotas)
+        target_project_id = id
+
+        try:
+            # With hierarchical projects, only the admin of the current project
+            # or the root project has privilege to perform quota show
+            # operations.
+            context_project = KEYSTONE.get_project(context, context.project_id,
+                                                   subtree=True)
+            target_project = KEYSTONE.get_project(context, target_project_id)
+
+            self._authorize_show(context_project, target_project)
+            parent_project_id = target_project.parent_id
+        except ksc_exceptions.Forbidden:
+            # NOTE(ericksonsantos): Keystone API v2 requires admin permissions
+            # for project_get method. We ignore Forbidden exception for
+            # non-admin users.
+            parent_project_id = None
+
+        quotas = self._get_quotas(context,
+                                  target_project_id,
+                                  user_id=user_id,
+                                  parent_project_id=parent_project_id)
+        return self._format_quota_set(target_project_id,
+                                      quotas,
+                                      filtered_quotas=filtered_quotas)
 
     @wsgi.Controller.api_version("2.1", MAX_PROXY_API_SUPPORT_VERSION)
     @extensions.expected_errors(())
@@ -227,7 +261,7 @@ class QuotaSetsController(wsgi.Controller):
             filtered_quotas=filtered_quotas)
 
     @wsgi.Controller.api_version("2.1", MAX_PROXY_API_SUPPORT_VERSION)
-    @extensions.expected_errors(400)
+    @extensions.expected_errors((400, 403))
     @validation.schema(quota_sets.update)
     def update(self, req, id, body):
         return self._update(req, id, body, [])
@@ -314,7 +348,7 @@ class QuotaSetsController(wsgi.Controller):
     # TODO(oomichi): Here should be 204(No Content) instead of 202 by v2.1
     # +microversions because the resource quota-set has been deleted completely
     # when returning a response.
-    @extensions.expected_errors(())
+    @extensions.expected_errors(403)
     @wsgi.response(202)
     def delete(self, req, id):
         context = req.environ['nova.context']

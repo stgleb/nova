@@ -1095,7 +1095,8 @@ def quota_create(context, project_id, resource, limit, user_id=None,
                  child_hard_limits=0):
     """Create a quota for the given project and resource."""
     return IMPL.quota_create(context, project_id, resource, limit,
-                             user_id=user_id, child_hard_limits=child_hard_limits)
+                             user_id=user_id,
+                             child_hard_limits=child_hard_limits)
 
 
 def quota_allocated_get_all_by_project(context, project_id):

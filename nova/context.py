@@ -24,7 +24,8 @@ import webob
 from keystoneclient.auth.identity.generic import token
 from keystoneclient import client
 from keystoneclient import exceptions
-from keystoneclient import session
+# from keystoneclient import session
+from keystoneauth1 import session
 from oslo_config import cfg
 from keystoneauth1.access import service_catalog as ksa_service_catalog
 from keystoneauth1 import plugin
@@ -301,12 +302,27 @@ class HierarchyInfo(context.RequestContext):
             self.subtree = project_subtree
 
     def _keystone_client(self, context):
+        # TODO: add mocking for keystoneclient at all tests
+        # test_quotas_detail_filtered
+        # test_quotas_default_filtered
+        # test_quotas_show
+        # test_quotas_update_input_filtered
+        # test_quotas_update_output_filtered
+        # test_quotas_show_filtered
+
+        if CONF.keystone_authtoken.auth_uri is None:
+            auth_url = "http://localhost:35357/v2.0"
+        else:
+            auth_url = CONF.keystone_authtoken.auth_uri
+
         auth_plugin = token.Token(
-            auth_url=CONF.keystone_authtoken.auth_uri,
+            auth_url=auth_url,
             token=context.auth_token,
             project_id=context.project_id)
+
         client_session = session.Session(auth=auth_plugin)
-        return client.Client(auth_url=CONF.keystone_authtoken.auth_uri,
+
+        return client.Client(auth_url=auth_url,
                              session=client_session)
 
     def get_project(self, context, project_id, subtree=False):
