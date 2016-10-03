@@ -27,7 +27,7 @@ from nova.api.openstack.compute.schemas import quota_sets
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova.api import validation
-# from nova.db.sqlalchemy import api as sqlalchemy_api
+from nova.db.sqlalchemy import api as sqlalchemy_api
 from nova import context
 from nova import db
 from nova import exception
@@ -273,30 +273,77 @@ class QuotaSetsController(wsgi.Controller):
         return self._update(req, id, body, FILTERED_QUOTAS)
 
     def _update(self, req, id, body, filtered_quotas):
+        """Update Quota for a particular tenant
+
+        This works for hierarchical and non-hierarchical projects. For
+        hierarchical projects only immediate parent admin or the
+        CLOUD admin are able to perform an update.
+
+        :param req: request
+        :param id: target project id that needs to be updated
+        :param body: key, value pair that that will be
+                     applied to the resources if the update
+                     succeeds
+        """
+        # Failed tests:
+        #
+        # ExtendedQuotasTestV21.test_quotas_update_bad_data
+        # ExtendedQuotasTestV21.test_quotas_update_exceed_in_used
+        # ExtendedQuotasTestV21.test_quotas_update_good_data
+        # QuotaSetsTestV21.test_quotas_update
+        # QuotaSetsTestV21.test_quotas_update_with_bad_data
+        # QuotaSetsTestV21.test_quotas_update_with_good_data
+        # QuotaSetsTestV21.test_quotas_update_zero_value
+        # QuotaSetsTestV236.test_quotas_update_input_filtered
+        # QuotaSetsTestV236.test_quotas_update_output_filtered
+
+
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'update', {'project_id': id})
-        project_id = id
+        target_project_id = id
         params = urlparse.parse_qs(req.environ.get('QUERY_STRING', ''))
         user_id = params.get('user_id', [None])[0]
-
         quota_set = body['quota_set']
+
+        # Get the parent_id of the target project to verify whether we are
+        # dealing with hierarchical namespace or non-hierarchical namespace.
+        target_project = KEYSTONE.get_project(context, target_project_id)
+        parent_project_id = target_project.parent_id
+
+        if parent_project_id:
+            # Get the children of the project which the token is scoped to in
+            # order to know if the target_project is in its hierarchy.
+            context_project = KEYSTONE.get_project(context,
+                                                   context.project_id,
+                                                   subtree=True)
+            self._authorize_update_or_delete(context_project,
+                                             target_project.id,
+                                             parent_project_id)
+            parent_project_quotas = QUOTAS.get_project_quotas(
+                context, parent_project_id,
+                parent_project_id=parent_project_id)
 
         # NOTE(alex_xu): The CONF.enable_network_quota was deprecated due to
         # it is only used by nova-network, and nova-network will be deprecated
         # also. So when CONF.enable_newtork_quota is removed, the networks
-        # quota will disappeare also.
+        # quota will disappears also.
         if not CONF.enable_network_quota and 'networks' in quota_set:
             raise webob.exc.HTTPBadRequest(
                 explanation=_('The networks quota is disabled'))
 
         force_update = strutils.bool_from_string(quota_set.get('force',
                                                                'False'))
-        settable_quotas = QUOTAS.get_settable_quotas(context, project_id,
+        settable_quotas = QUOTAS.get_settable_quotas(context, target_project_id,
                                                      user_id=user_id)
 
         # NOTE(dims): Pass #1 - In this loop for quota_set.items(), we validate
         # min/max values and bail out if any of the items in the set is bad.
         valid_quotas = {}
+        allocated_quotas = {}
+        quota_values = QUOTAS.get_project_quotas(context,
+                                                 target_project_id,
+                                                 defaults=False)
+
         for key, value in six.iteritems(body['quota_set']):
             if key == 'force' or (not value and value != 0):
                 continue
@@ -308,6 +355,13 @@ class QuotaSetsController(wsgi.Controller):
                 minimum = settable_quotas[key]['minimum']
                 maximum = settable_quotas[key]['maximum']
                 self._validate_quota_limit(key, value, minimum, maximum)
+
+            if parent_project_id:
+                value = self._validate_quota_hierarchy(body['quota_set'], key,
+                                                       quota_values,
+                                                       parent_project_quotas)
+                allocated_quotas[key] = (
+                    parent_project_quotas[key].get('allocated', 0) + value)
             valid_quotas[key] = value
 
         # NOTE(dims): Pass #2 - At this point we know that all the
@@ -316,16 +370,30 @@ class QuotaSetsController(wsgi.Controller):
         # the validation up front in the loop above.
         for key, value in valid_quotas.items():
             try:
-                objects.Quotas.create_limit(context, project_id,
+                objects.Quotas.create_limit(context, target_project_id,
                                             key, value, user_id=user_id)
             except exception.QuotaExists:
-                objects.Quotas.update_limit(context, project_id,
+                objects.Quotas.update_limit(context, target_project_id,
                                             key, value, user_id=user_id)
+        # If hierarchical projects, update child's quota first
+        # and then parents quota. In future this needs to be an
+        # atomic operation.
+        if parent_project_id:
+            if key in allocated_quotas.keys():
+                try:
+                    sqlalchemy_api.quota_allocated_update(
+                        context, parent_project_id, key, allocated_quotas[key])
+                except exception.ProjectQuotaNotFound:
+                    parent_limit = parent_project_quotas[key]['limit']
+                    sqlalchemy_api.quota_create(
+                        context, parent_project_id, key, parent_limit,
+                        allocated=allocated_quotas[key])
+
         # Note(gmann): Removed 'id' from update's response to make it same
         # as V2. If needed it can be added with microversion.
         return self._format_quota_set(
             None,
-            self._get_quotas(context, id, user_id=user_id),
+            self._get_quotas(context, target_project_id, user_id=user_id),
             filtered_quotas=filtered_quotas)
 
     @wsgi.Controller.api_version("2.0", MAX_PROXY_API_SUPPORT_VERSION)
