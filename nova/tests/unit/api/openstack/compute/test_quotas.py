@@ -70,6 +70,9 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
             'security_group_rules': 20,
             'key_pairs': 100,
         }
+        import pdb
+        pdb.set_trace()
+
         if self.include_server_group_quotas:
             self.default_quotas['server_groups'] = 10
             self.default_quotas['server_group_members'] = 10
@@ -175,7 +178,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
             def __init__(self, project_id, parent_id=None):
                 self.id = project_id
                 self.parent_id = parent_id
-                                
         # Note: controller adds some bullshit in response
         quotas = {'quota_set': {'cores': 20,
                                 'fixed_ips': -1,
@@ -188,19 +190,21 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
                                 'key_pairs': 100,
                                 'metadata_items': 128,
                                 'ram': 51200,
-                                'security_group_rules': 20}}
+                                'security_group_rules': 20,
+                                'server_group_members': 10,
+                                'security_groups': 10,
+                                'server_groups': 10}}
 
         project = FakeProject(1234, 1234)
         get_project_mock.return_value = project
         format_quotas_mock.return_value = quotas
         authorize_mock.return_value = True
-
         req = self._get_http_request()
         res_dict = self.controller.show(req, 1234)
 
         ref_quota_set = quota_set('1234', self.include_server_group_quotas)
         self.assertEqual(format_quotas_mock.called, 1)
-        self.assertEqual(res_dict, ref_quota_set)
+        self.assertEqual(ref_quota_set, res_dict)
 
     def test_quotas_update(self):
         self.default_quotas.update({
