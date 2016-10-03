@@ -70,8 +70,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
             'security_group_rules': 20,
             'key_pairs': 100,
         }
-        import pdb
-        pdb.set_trace()
 
         if self.include_server_group_quotas:
             self.default_quotas['server_groups'] = 10
