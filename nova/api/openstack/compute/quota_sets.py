@@ -297,7 +297,6 @@ class QuotaSetsController(wsgi.Controller):
         # QuotaSetsTestV236.test_quotas_update_input_filtered
         # QuotaSetsTestV236.test_quotas_update_output_filtered
 
-
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'update', {'project_id': id})
         target_project_id = id
@@ -325,7 +324,7 @@ class QuotaSetsController(wsgi.Controller):
 
         # NOTE(alex_xu): The CONF.enable_network_quota was deprecated due to
         # it is only used by nova-network, and nova-network will be deprecated
-        # also. So when CONF.enable_newtork_quota is removed, the networks
+        # also. So when CONF.enable_network_quota is removed, the networks
         # quota will disappears also.
         if not CONF.enable_network_quota and 'networks' in quota_set:
             raise webob.exc.HTTPBadRequest(

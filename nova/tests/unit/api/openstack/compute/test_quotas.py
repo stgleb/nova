@@ -204,7 +204,16 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
         self.assertEqual(format_quotas_mock.called, 1)
         self.assertEqual(ref_quota_set, res_dict)
 
-    def test_quotas_update(self):
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_project_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_settable_quotas")
+    def test_quotas_update(self, get_settable_quotas_mock, get_project_quotas_mock,
+                           get_project_mock, authorize_mock):
         self.default_quotas.update({
             'instances': 50,
             'cores': 50
