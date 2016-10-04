@@ -63,8 +63,8 @@ class QuotaSetsController(wsgi.Controller):
 
     def _validate_quota_hierarchy(self, quota, key, project_quotas=None,
                                   parent_project_quotas=None):
-        limit = utils.validate_integer(quota[key], key, min_value=-1,
-                                       max_value=db.MAX_INT)
+        # min_value is None, so limit check below can throw Bad Request
+        limit = utils.validate_integer(quota[key], key, max_value=db.MAX_INT)
         # NOTE: -1 is a flag value for unlimited
         if limit < -1:
             msg = (_("Quota limit %(limit)s for %(key)s "
@@ -296,13 +296,17 @@ class QuotaSetsController(wsgi.Controller):
         # QuotaSetsTestV21.test_quotas_update_zero_value
         # QuotaSetsTestV236.test_quotas_update_input_filtered
         # QuotaSetsTestV236.test_quotas_update_output_filtered
-
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'update', {'project_id': id})
         target_project_id = id
         params = urlparse.parse_qs(req.environ.get('QUERY_STRING', ''))
         user_id = params.get('user_id', [None])[0]
-        quota_set = body['quota_set']
+
+        try:
+            quota_set = body['quota_set']
+        except KeyError:
+            msg = _("Can't find quota_set key %s.") % body
+            raise webob.exc.HTTPBadRequest(explanation=msg)
 
         # Get the parent_id of the target project to verify whether we are
         # dealing with hierarchical namespace or non-hierarchical namespace.
@@ -332,11 +336,13 @@ class QuotaSetsController(wsgi.Controller):
 
         force_update = strutils.bool_from_string(quota_set.get('force',
                                                                'False'))
-        settable_quotas = QUOTAS.get_settable_quotas(context, target_project_id,
+        settable_quotas = QUOTAS.get_settable_quotas(context,
+                                                     target_project_id,
                                                      user_id=user_id)
 
-        # NOTE(dims): Pass #1 - In this loop for quota_set.items(), we validate
-        # min/max values and bail out if any of the items in the set is bad.
+        # NOTE(dims): Pass #1 - In this loop for quota_set.items(), we
+        # validate  min/max values and bail out if any of the items in
+        # the set is bad.
         valid_quotas = {}
         allocated_quotas = {}
         quota_values = QUOTAS.get_project_quotas(context,
@@ -350,7 +356,9 @@ class QuotaSetsController(wsgi.Controller):
             # quota, this check will be ignored if admin want to force
             # update
             value = int(value)
-            if not force_update:
+
+            # Quotas updates for non-settable quotas will be ignored
+            if not force_update and key in settable_quotas:
                 minimum = settable_quotas[key]['minimum']
                 maximum = settable_quotas[key]['maximum']
                 self._validate_quota_limit(key, value, minimum, maximum)
@@ -360,7 +368,7 @@ class QuotaSetsController(wsgi.Controller):
                                                        quota_values,
                                                        parent_project_quotas)
                 allocated_quotas[key] = (
-                    parent_project_quotas[key].get('allocated', 0) + value)
+                    parent_project_quotas[key].get('child_hard_limits', 0) + value)
             valid_quotas[key] = value
 
         # NOTE(dims): Pass #2 - At this point we know that all the
