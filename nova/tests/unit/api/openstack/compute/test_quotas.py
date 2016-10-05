@@ -105,20 +105,20 @@ class BaseQuotaSetsTest(test.TestCase):
     @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
                 "get_project")
     @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_format_quota_set")
-    def _test_quotas_show(self, format_quotas_mock, get_project_mock,
-                         authorize_mock, project=None, quotas=None, req=None):
+                "_get_quotas")
+    def _test_quotas_show(self, get_quotas_mock, get_project_mock,
+                          authorize_mock, project=None, quotas=None, req=None):
         if req is None:
             req = self._get_http_request()
 
         get_project_mock.return_value = project
-        format_quotas_mock.return_value = quotas
+        get_quotas_mock.return_value = quotas['quota_set']
         authorize_mock.return_value = True
         res_dict = self.controller.show(req, project.id)
 
         ref_quota_set = quota_set(str(project.id),
                                   self.include_server_group_quotas)
-        self.assertEqual(format_quotas_mock.called, 1)
+        self.assertEqual(get_quotas_mock.called, 1)
         self.assertEqual(ref_quota_set, res_dict)
 
     def _prepare_quotas(self):
@@ -159,12 +159,9 @@ class BaseQuotaSetsTest(test.TestCase):
     @mock.patch("nova.api.openstack.compute.quota_sets.sqlalchemy_api."
                 "quota_allocated_update")
     @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_format_quota_set")
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
                 "_get_quotas")
     @mock.patch('nova.api.validation.validators._SchemaValidator.validate')
     def _test_quotas_update(self, validate_mock, get_quotas_mock,
-                            _format_quota_set_mock,
                             quota_allocated_update_mock,
                             _validate_quota_hierarchy_mock,
                             _validate_quota_limit_mock,
@@ -182,12 +179,11 @@ class BaseQuotaSetsTest(test.TestCase):
                                                child_quotas]
         get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
         _validate_quota_hierarchy_mock.return_value = 0
+        get_quotas_mock.return_value = result['quota_set']
 
         # Remove force from response body, to pass last assert
         if force:
             result['quota_set'].pop('force')
-
-        _format_quota_set_mock.return_value = result
 
         if req is None:
             req = self._get_http_request()
