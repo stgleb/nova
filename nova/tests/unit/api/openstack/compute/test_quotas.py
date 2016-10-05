@@ -42,7 +42,15 @@ def quota_set(id, include_server_group_quotas=True):
     return res
 
 
+class FakeProject(object):
+    def __init__(self, project_id, parent_id=None):
+        self.id = project_id
+        self.parent_id = parent_id
+
+
 class BaseQuotaSetsTest(test.TestCase):
+    include_server_group_quotas = True
+
     fake_quotas = {'ram': {'limit': 51200,
                            'in_use': 12800,
                            'reserved': 12800},
@@ -52,6 +60,27 @@ class BaseQuotaSetsTest(test.TestCase):
                    'instances': {'limit': 100,
                                  'in_use': 0,
                                  'reserved': 0}}
+
+    def setUp(self):
+        super(BaseQuotaSetsTest, self).setUp()
+        self.default_quotas = {
+            'instances': 10,
+            'cores': 20,
+            'ram': 51200,
+            'floating_ips': 10,
+            'fixed_ips': -1,
+            'metadata_items': 128,
+            'injected_files': 5,
+            'injected_file_path_bytes': 255,
+            'injected_file_content_bytes': 10240,
+            'security_groups': 10,
+            'security_group_rules': 20,
+            'key_pairs': 100,
+        }
+
+        if self.include_server_group_quotas:
+            self.default_quotas['server_groups'] = 10
+            self.default_quotas['server_group_members'] = 10
 
     def fake_get_settable_quotas(self, context, project_id, user_id=None):
         return {
@@ -121,7 +150,7 @@ class BaseQuotaSetsTest(test.TestCase):
                             create_limit_mock,
                             get_settable_quotas_mock,
                             get_project_quotas_mock, get_project_mock,
-                            authorize_mock, body, result, project):
+                            authorize_mock, body, result, project, force=False):
 
         parent_quotas, child_quotas = self._prepare_quotas()
         get_project_mock.return_value = project
@@ -132,6 +161,11 @@ class BaseQuotaSetsTest(test.TestCase):
                                                child_quotas]
         get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
         _validate_quota_hierarchy_mock.return_value = 0
+
+        # Remove force from response body, to pass last assert
+        if force:
+            result['quota_set'].pop('force')
+
         _format_quota_set_mock.return_value = result
 
         req = self._get_http_request()
@@ -139,10 +173,12 @@ class BaseQuotaSetsTest(test.TestCase):
         self.assertEqual(body, res_dict)
         self.assertTrue(create_limit_mock.called)
         self.assertTrue(authorize_mock.called)
-        self.assertTrue(_validate_quota_limit_mock.called)
+
+        if not force:
+            self.assertTrue(_validate_quota_limit_mock.called)
         self.assertTrue(quota_allocated_update_mock.called)
         self.assertTrue(get_quotas_mock.called)
-        self.assertEqual(len(self.default_quotas),
+        self.assertEqual(len(body['quota_set'].keys()),
                          len(create_limit_mock.mock_calls))
 
     @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
@@ -160,16 +196,6 @@ class BaseQuotaSetsTest(test.TestCase):
                                          mock_validate, get_settable_quotas_mock,
                                          get_project_quotas_mock, get_project_mock,
                                          authorize_mock, body):
-        self.default_quotas.update({
-            'instances': 50,
-            'cores': -50
-        })
-
-        class FakeProject(object):
-            def __init__(self, project_id, parent_id=None):
-                self.id = project_id
-                self.parent_id = parent_id
-
         project = FakeProject(1, 2)
         get_project_mock.return_value = project
         authorize_mock.side_effect = None
@@ -188,29 +214,10 @@ class BaseQuotaSetsTest(test.TestCase):
 class QuotaSetsTestV21(BaseQuotaSetsTest):
     plugin = quotas_v21
     validation_error = exception.ValidationError
-    include_server_group_quotas = True
 
     def setUp(self):
         super(QuotaSetsTestV21, self).setUp()
         self._setup_controller()
-        self.default_quotas = {
-            'instances': 10,
-            'cores': 20,
-            'ram': 51200,
-            'floating_ips': 10,
-            'fixed_ips': -1,
-            'metadata_items': 128,
-            'injected_files': 5,
-            'injected_file_path_bytes': 255,
-            'injected_file_content_bytes': 10240,
-            'security_groups': 10,
-            'security_group_rules': 20,
-            'key_pairs': 100,
-        }
-
-        if self.include_server_group_quotas:
-            self.default_quotas['server_groups'] = 10
-            self.default_quotas['server_group_members'] = 10
 
     def _setup_controller(self):
         self.ext_mgr = self.mox.CreateMock(extensions.ExtensionManager)
@@ -309,10 +316,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
                 "_format_quota_set")
     def test_quotas_show(self, format_quotas_mock, get_project_mock,
                          authorize_mock):
-        class FakeProject(object):
-            def __init__(self, project_id, parent_id=None):
-                self.id = project_id
-                self.parent_id = parent_id
         # Note: controller adds some bullshit in response
         quotas = {'quota_set': {'cores': 20,
                                 'fixed_ips': -1,
@@ -342,11 +345,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
         self.assertEqual(ref_quota_set, res_dict)
 
     def test_quotas_update_success(self):
-        class FakeProject(object):
-            def __init__(self, project_id, parent_id=None):
-                self.id = project_id
-                self.parent_id = parent_id
-
         project = FakeProject(1, 2)
         self.default_quotas.update({
             'instances': 50,
@@ -377,11 +375,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
             'cores': 0,
             'ram': 0
         })
-
-        class FakeProject(object):
-            def __init__(self, project_id, parent_id=None):
-                self.id = project_id
-                self.parent_id = parent_id
 
         project = FakeProject(1, 2)
         quotas_result = {'quota_set': {'cores': 0,
@@ -499,31 +492,14 @@ class ExtendedQuotasTestV21(BaseQuotaSetsTest):
         return fakes.HTTPRequest.blank(url)
 
     def test_quotas_update_exceed_in_used(self):
-        patcher = mock.patch.object(quota.QUOTAS, 'get_settable_quotas')
-        get_settable_quotas = patcher.start()
-
-        body = {'quota_set': {'cores': 10}}
-
-        get_settable_quotas.side_effect = self.fake_get_settable_quotas
-        req = self._get_http_request()
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
-                          req, 'update_me', body=body)
-        mock.patch.stopall()
+        body = {'quota_set': {'instances': 60}}
+        self._test_quotas_update_bad_request(body=body)
 
     def test_quotas_force_update_exceed_in_used(self):
-        patcher = mock.patch.object(quota.QUOTAS, 'get_settable_quotas')
-        get_settable_quotas = patcher.start()
-        patcher = mock.patch.object(self.plugin.QuotaSetsController,
-                                    '_get_quotas')
-        _get_quotas = patcher.start()
-
         body = {'quota_set': {'cores': 10, 'force': 'True'}}
-
-        get_settable_quotas.side_effect = self.fake_get_settable_quotas
-        _get_quotas.side_effect = self.fake_get_quotas
-        req = self._get_http_request()
-        self.controller.update(req, 'update_me', body=body)
-        mock.patch.stopall()
+        project = FakeProject(1, 2)
+        self._test_quotas_update(body=body, project=project, result=body,
+                                 force=True)
 
     @mock.patch('nova.objects.Quotas.create_limit')
     def test_quotas_update_good_data(self, mock_createlimit):
@@ -723,10 +699,6 @@ class QuotaSetsTestV236(test.NoDBTestCase):
     @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
                 "get_project")
     def test_quotas_show_filtered(self, authorize_mock, get_project_mock):
-        class FakeProject(object):
-            def __init__(self, id):
-                self.id = id
-
         project = FakeProject(1)
         get_project_mock.return_value = project
 
