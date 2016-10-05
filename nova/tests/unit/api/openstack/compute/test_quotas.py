@@ -735,12 +735,12 @@ class QuotaSetsTestV236(test.NoDBTestCase):
         self._ensure_filtered_quotas_existed_in_old_api()
         for filtered in self.filtered_quotas:
             self.assertRaises(exception.ValidationError,
-                self.controller.update, self.req, 1234,
-                body={'quota_set': {filtered: 100}})
+                              self.controller.update, self.req, 1234,
+                              body={'quota_set': {filtered: 100}})
 
     def test_quotas_update_output_filtered(self):
         self._ensure_filtered_quotas_existed_in_old_api()
         res_dict = self.controller.update(self.req, 1234,
-             body={'quota_set': {'cores': 100}})
+                                          body={'quota_set': {'cores': 100}})
         for filtered in self.filtered_quotas:
             self.assertNotIn(filtered, res_dict['quota_set'])

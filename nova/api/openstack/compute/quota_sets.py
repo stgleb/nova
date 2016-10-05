@@ -285,17 +285,6 @@ class QuotaSetsController(wsgi.Controller):
                      applied to the resources if the update
                      succeeds
         """
-        # Failed tests:
-        #
-        # ExtendedQuotasTestV21.test_quotas_update_bad_data
-        # ExtendedQuotasTestV21.test_quotas_update_exceed_in_used
-        # ExtendedQuotasTestV21.test_quotas_update_good_data
-        # QuotaSetsTestV21.test_quotas_update
-        # QuotaSetsTestV21.test_quotas_update_with_bad_data
-        # QuotaSetsTestV21.test_quotas_update_with_good_data
-        # QuotaSetsTestV21.test_quotas_update_zero_value
-        # QuotaSetsTestV236.test_quotas_update_input_filtered
-        # QuotaSetsTestV236.test_quotas_update_output_filtered
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'update', {'project_id': id})
         target_project_id = id
