@@ -150,7 +150,7 @@ class BaseQuotaSetsTest(test.TestCase):
                             create_limit_mock,
                             get_settable_quotas_mock,
                             get_project_quotas_mock, get_project_mock,
-                            authorize_mock, body, result, project, force=False):
+                            authorize_mock, body, result, project, req=None, force=False):
 
         parent_quotas, child_quotas = self._prepare_quotas()
         get_project_mock.return_value = project
@@ -168,7 +168,9 @@ class BaseQuotaSetsTest(test.TestCase):
 
         _format_quota_set_mock.return_value = result
 
-        req = self._get_http_request()
+        if req is None:
+            req = self._get_http_request()
+
         res_dict = self.controller.update(req, 'update_me', body=body)
         self.assertEqual(body, res_dict)
         self.assertTrue(create_limit_mock.called)
@@ -195,7 +197,7 @@ class BaseQuotaSetsTest(test.TestCase):
     def _test_quotas_update_bad_request(self, mock_create_limit,
                                          mock_validate, get_settable_quotas_mock,
                                          get_project_quotas_mock, get_project_mock,
-                                         authorize_mock, body):
+                                         authorize_mock, body, req=None):
         project = FakeProject(1, 2)
         get_project_mock.return_value = project
         authorize_mock.side_effect = None
@@ -204,7 +206,9 @@ class BaseQuotaSetsTest(test.TestCase):
                                                child_quotas]
         get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
 
-        req = self._get_http_request()
+        if req is None:
+            req = self._get_http_request()
+
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
                           req, 'update_me', body=body)
         self.assertEqual(0,
@@ -501,32 +505,21 @@ class ExtendedQuotasTestV21(BaseQuotaSetsTest):
         self._test_quotas_update(body=body, project=project, result=body,
                                  force=True)
 
-    @mock.patch('nova.objects.Quotas.create_limit')
-    def test_quotas_update_good_data(self, mock_createlimit):
+    def test_quotas_update_good_data(self):
         body = {'quota_set': {'cores': 1,
                               'instances': 1}}
+        project = FakeProject(1, 2)
         req = fakes.HTTPRequest.blank('/v2/fake4/os-quota-sets/update_me',
                                       use_admin_context=True)
-        self.controller.update(req, 'update_me', body=body)
-        self.assertEqual(2,
-                         len(mock_createlimit.mock_calls))
+        self._test_quotas_update(body=body, result=body, project=project,
+                                 req=req)
 
-    @mock.patch('nova.objects.Quotas.create_limit')
-    def test_quotas_update_bad_data(self, mock_createlimit):
-        patcher = mock.patch.object(quota.QUOTAS, 'get_settable_quotas')
-        get_settable_quotas = patcher.start()
-
+    def test_quotas_update_bad_data(self):
         body = {'quota_set': {'cores': 10,
                               'instances': 1}}
-
-        get_settable_quotas.side_effect = self.fake_get_settable_quotas
         req = fakes.HTTPRequest.blank('/v2/fake4/os-quota-sets/update_me',
                                       use_admin_context=True)
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
-                          req, 'update_me', body=body)
-        mock.patch.stopall()
-        self.assertEqual(0,
-                         len(mock_createlimit.mock_calls))
+        self._test_quotas_update_bad_request(body=body, req=req)
 
 
 class UserQuotasTestV21(BaseQuotaSetsTest):
