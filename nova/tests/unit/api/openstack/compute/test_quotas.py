@@ -100,6 +100,27 @@ class BaseQuotaSetsTest(test.TestCase):
         # method instead of status_int in a response object.
         return self.controller.delete.wsgi_code
 
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_show")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_format_quota_set")
+    def _test_quotas_show(self, format_quotas_mock, get_project_mock,
+                         authorize_mock, project=None, quotas=None, req=None):
+        if req is None:
+            req = self._get_http_request()
+
+        get_project_mock.return_value = project
+        format_quotas_mock.return_value = quotas
+        authorize_mock.return_value = True
+        res_dict = self.controller.show(req, project.id)
+
+        ref_quota_set = quota_set(str(project.id),
+                                  self.include_server_group_quotas)
+        self.assertEqual(format_quotas_mock.called, 1)
+        self.assertEqual(ref_quota_set, res_dict)
+
     def _prepare_quotas(self):
         parent_quotas = {}
         child_quotas = {}
@@ -195,9 +216,9 @@ class BaseQuotaSetsTest(test.TestCase):
     @mock.patch("nova.api.openstack.compute.quota_sets.objects."
                 "Quotas.create_limit")
     def _test_quotas_update_bad_request(self, mock_create_limit,
-                                         mock_validate, get_settable_quotas_mock,
-                                         get_project_quotas_mock, get_project_mock,
-                                         authorize_mock, body, req=None):
+                                        mock_validate, get_settable_quotas_mock,
+                                        get_project_quotas_mock, get_project_mock,
+                                        authorize_mock, body, req=None):
         project = FakeProject(1, 2)
         get_project_mock.return_value = project
         authorize_mock.side_effect = None
@@ -312,19 +333,14 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
 
         self.assertEqual(res_dict, expected)
 
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_authorize_show")
-    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
-                "get_project")
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_format_quota_set")
-    def test_quotas_show(self, format_quotas_mock, get_project_mock,
-                         authorize_mock):
+    def test_quotas_show(self):
         # Note: controller adds some bullshit in response
+        project = FakeProject(1, 2)
+
         quotas = {'quota_set': {'cores': 20,
                                 'fixed_ips': -1,
                                 'floating_ips': 10,
-                                'id': '1234',
+                                'id': str(project.id),
                                 'injected_file_content_bytes': 10240,
                                 'injected_file_path_bytes': 255,
                                 'injected_files': 5,
@@ -337,16 +353,7 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
                                 'security_groups': 10,
                                 'server_groups': 10}}
 
-        project = FakeProject(1234, 1234)
-        get_project_mock.return_value = project
-        format_quotas_mock.return_value = quotas
-        authorize_mock.return_value = True
-        req = self._get_http_request()
-        res_dict = self.controller.show(req, 1234)
-
-        ref_quota_set = quota_set('1234', self.include_server_group_quotas)
-        self.assertEqual(format_quotas_mock.called, 1)
-        self.assertEqual(ref_quota_set, res_dict)
+        self._test_quotas_show(quotas=quotas, project=project)
 
     def test_quotas_update_success(self):
         project = FakeProject(1, 2)
@@ -539,11 +546,26 @@ class UserQuotasTestV21(BaseQuotaSetsTest):
 
     def test_user_quotas_show(self):
         req = self._get_http_request('/v2/fake4/os-quota-sets/1234?user_id=1')
-        res_dict = self.controller.show(req, 1234)
-        ref_quota_set = quota_set('1234', self.include_server_group_quotas)
-        self.assertEqual(res_dict, ref_quota_set)
+        project = FakeProject(1, 2)
+        quotas = {'quota_set': {'cores': 20,
+                                'fixed_ips': -1,
+                                'floating_ips': 10,
+                                'id': str(project.id),
+                                'injected_file_content_bytes': 10240,
+                                'injected_file_path_bytes': 255,
+                                'injected_files': 5,
+                                'instances': 10,
+                                'key_pairs': 100,
+                                'metadata_items': 128,
+                                'ram': 51200,
+                                'security_group_rules': 20,
+                                'server_group_members': 10,
+                                'security_groups': 10,
+                                'server_groups': 10}}
 
-    def test_user_quotas_update(self):
+        self._test_quotas_show(quotas=quotas, project=project, req=req)
+
+    def test_user_quotas_update_success(self):
         body = {'quota_set': {'instances': 10, 'cores': 20,
                               'ram': 51200, 'floating_ips': 10,
                               'fixed_ips': -1, 'metadata_items': 128,
@@ -553,23 +575,43 @@ class UserQuotasTestV21(BaseQuotaSetsTest):
                               'security_groups': 10,
                               'security_group_rules': 20,
                               'key_pairs': 100}}
+
         if self.include_server_group_quotas:
             body['quota_set']['server_groups'] = 10
             body['quota_set']['server_group_members'] = 10
 
         url = '/v2/fake4/os-quota-sets/update_me?user_id=1'
         req = self._get_http_request(url)
-        res_dict = self.controller.update(req, 'update_me', body=body)
-
-        self.assertEqual(body, res_dict)
+        project = FakeProject(1, 2)
+        self._test_quotas_update(req=req, project=project, body=body,
+                                 result=body)
 
     def test_user_quotas_update_exceed_project(self):
-        body = {'quota_set': {'instances': 20}}
+        body = {'quota_set': {'instances': 100}}
 
         url = '/v2/fake4/os-quota-sets/update_me?user_id=1'
         req = self._get_http_request(url)
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
-                          req, 'update_me', body=body)
+        self._test_quotas_update_bad_request(req=req,
+                                             body=body)
+
+    def test_user_quotas_update_good_data(self):
+        body = {'quota_set': {'instances': 1,
+                              'cores': 1}}
+
+        url = '/v2/fake4/os-quota-sets/update_me?user_id=1'
+        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
+        project = FakeProject(1, 2)
+        self._test_quotas_update(req=req, project=project, body=body,
+                                 result=body)
+
+    def test_user_quotas_update_bad_data(self):
+        body = {'quota_set': {'instances': -20,
+                              'cores': 1}}
+
+        url = '/v2/fake4/os-quota-sets/update_me?user_id=1'
+        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
+        self._test_quotas_update_bad_request(req=req,
+                                             body=body)
 
     def test_user_quotas_delete(self):
         url = '/v2/fake4/os-quota-sets/1234?user_id=1'
@@ -582,29 +624,6 @@ class UserQuotasTestV21(BaseQuotaSetsTest):
         res = self.controller.delete(req, 1234)
         self.mox.VerifyAll()
         self.assertEqual(202, self.get_delete_status_int(res))
-
-    @mock.patch('nova.objects.Quotas.create_limit')
-    def test_user_quotas_update_good_data(self, mock_createlimit):
-        body = {'quota_set': {'instances': 1,
-                              'cores': 1}}
-
-        url = '/v2/fake4/os-quota-sets/update_me?user_id=1'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        self.controller.update(req, 'update_me', body=body)
-        self.assertEqual(2,
-                         len(mock_createlimit.mock_calls))
-
-    @mock.patch('nova.objects.Quotas.create_limit')
-    def test_user_quotas_update_bad_data(self, mock_createlimit):
-        body = {'quota_set': {'instances': 20,
-                              'cores': 1}}
-
-        url = '/v2/fake4/os-quota-sets/update_me?user_id=1'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
-                          req, 'update_me', body=body)
-        self.assertEqual(0,
-                         len(mock_createlimit.mock_calls))
 
 
 class QuotaSetsPolicyEnforcementV21(test.NoDBTestCase):
