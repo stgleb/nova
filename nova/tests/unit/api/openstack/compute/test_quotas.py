@@ -701,8 +701,41 @@ class QuotaSetsTestV236(test.NoDBTestCase):
     def _remove_network_quota(self):
         del quota.QUOTAS._resources['networks']
 
-    def _ensure_filtered_quotas_existed_in_old_api(self):
-        res_dict = self.controller.show(self.old_req, 1234)
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_show")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_get_quotas")
+    def _ensure_filtered_quotas_existed_in_old_api(self, get_quotas_mock,
+                                                   get_project_mock,
+                                                   authorize_mock):
+        project = FakeProject(1, 2)
+        quotas = {'cores': 20,
+                  'fixed_ips': -1,
+                  'floating_ips': 10,
+                  'id': str(project.id),
+                  'injected_file_content_bytes': 10240,
+                  'injected_file_path_bytes': 255,
+                  'injected_files': 5,
+                  'instances': 10,
+                  'key_pairs': 100,
+                  'metadata_items': 128,
+                  'ram': 51200,
+                  'networks': 1,
+                  'security_group_rules': 20,
+                  'server_group_members': 10,
+                  'security_groups': 10,
+                  'server_groups': 10}
+
+        get_project_mock.return_value = project
+        get_quotas_mock.return_value = quotas
+        authorize_mock.return_value = True
+        res_dict = self.controller.show(self.old_req, project.id)
+        ref_quota_set = {'quota_set': quotas}
+
+        self.assertEqual(get_quotas_mock.called, 1)
+        self.assertEqual(ref_quota_set, res_dict)
         for filtered in self.filtered_quotas:
             self.assertIn(filtered, res_dict['quota_set'])
 
@@ -713,8 +746,6 @@ class QuotaSetsTestV236(test.NoDBTestCase):
     def test_quotas_show_filtered(self, authorize_mock, get_project_mock):
         project = FakeProject(1)
         get_project_mock.return_value = project
-
-        self._ensure_filtered_quotas_existed_in_old_api()
         res_dict = self.controller.show(self.req, 1234)
         for filtered in self.filtered_quotas:
             self.assertNotIn(filtered, res_dict['quota_set'])
@@ -738,9 +769,71 @@ class QuotaSetsTestV236(test.NoDBTestCase):
                               self.controller.update, self.req, 1234,
                               body={'quota_set': {filtered: 100}})
 
-    def test_quotas_update_output_filtered(self):
+    def _prepare_quotas(self, input):
+        quotas = {}
+
+        for key, value in six.iteritems(input):
+            quotas[key] = {
+                'limit': value,
+                'in_use': value,
+                'reserved': value,
+                'child_hard_limits': value
+            }
+
+        return quotas
+
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_project_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_settable_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.objects."
+                "Quotas.create_limit")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_validate_quota_limit")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_validate_quota_hierarchy")
+    @mock.patch("nova.api.openstack.compute.quota_sets.sqlalchemy_api."
+                "quota_allocated_update")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_get_quotas")
+    def test_quotas_update_output_filtered(self, get_quotas_mock,
+                                           quota_allocated_update_mock,
+                                           _validate_quota_hierarchy_mock,
+                                           _validate_quota_limit_mock,
+                                           create_limit_mock,
+                                           get_settable_quotas_mock,
+                                           get_project_quotas_mock, get_project_mock,
+                                           authorize_mock):
         self._ensure_filtered_quotas_existed_in_old_api()
-        res_dict = self.controller.update(self.req, 1234,
-                                          body={'quota_set': {'cores': 100}})
+        body = {'quota_set':
+                {'cores': 100}}
+
+        project = FakeProject(1, 2)
+        parent_quotas = self._prepare_quotas(body['quota_set'])
+        child_quotas = self._prepare_quotas(body['quota_set'])
+
+        get_project_mock.return_value = project
+        authorize_mock.side_effect = None
+        create_limit_mock.side_effect = None
+        _validate_quota_limit_mock.side_effect = None
+        get_quotas_mock.return_value = body['quota_set']
+        get_project_quotas_mock.side_effect = [parent_quotas,
+                                               child_quotas]
+        get_settable_quotas_mock.side_effect = [{}]
+        _validate_quota_hierarchy_mock.return_value = 0
+
+        res_dict = self.controller.update(self.req, 1234, body=body)
+        self.assertEqual(body, res_dict)
+        self.assertTrue(create_limit_mock.called)
+        self.assertTrue(authorize_mock.called)
+
+        self.assertTrue(quota_allocated_update_mock.called)
+        self.assertTrue(get_quotas_mock.called)
+        self.assertEqual(len(body['quota_set'].keys()),
+                         len(create_limit_mock.mock_calls))
         for filtered in self.filtered_quotas:
             self.assertNotIn(filtered, res_dict['quota_set'])

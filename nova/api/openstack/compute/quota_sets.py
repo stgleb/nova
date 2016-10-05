@@ -262,13 +262,13 @@ class QuotaSetsController(wsgi.Controller):
 
     @wsgi.Controller.api_version("2.1", MAX_PROXY_API_SUPPORT_VERSION)
     @extensions.expected_errors((400, 403))
-    @validation.schema(quota_sets.update)
+    @validation.schema(quota_sets.update, min_version="2.1", max_version=MAX_PROXY_API_SUPPORT_VERSION)
     def update(self, req, id, body):
         return self._update(req, id, body, [])
 
     @wsgi.Controller.api_version(MIN_WITHOUT_PROXY_API_SUPPORT_VERSION)  # noqa
     @extensions.expected_errors(400)
-    @validation.schema(quota_sets.update_v236)
+    @validation.schema(quota_sets.update_v236, min_version=MIN_WITHOUT_PROXY_API_SUPPORT_VERSION)
     def update(self, req, id, body):
         return self._update(req, id, body, FILTERED_QUOTAS)
 
@@ -325,6 +325,7 @@ class QuotaSetsController(wsgi.Controller):
 
         force_update = strutils.bool_from_string(quota_set.get('force',
                                                                'False'))
+
         settable_quotas = QUOTAS.get_settable_quotas(context,
                                                      target_project_id,
                                                      user_id=user_id)
