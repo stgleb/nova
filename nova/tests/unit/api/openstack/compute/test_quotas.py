@@ -71,6 +71,119 @@ class BaseQuotaSetsTest(test.TestCase):
         # method instead of status_int in a response object.
         return self.controller.delete.wsgi_code
 
+    def _prepare_quotas(self):
+        parent_quotas = {}
+        child_quotas = {}
+
+        for key, value in six.iteritems(self.default_quotas):
+            parent_quotas[key] = {
+                'limit': value,
+                'in_use': value,
+                'reserved': value,
+                'child_hard_limits': value
+            }
+
+            child_quotas = {
+                'limit': value,
+                'in_use': value,
+                'reserved': value,
+                'child_hard_limits': value
+            }
+
+        return parent_quotas, child_quotas
+
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_project_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_settable_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.objects."
+                "Quotas.create_limit")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_validate_quota_limit")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_validate_quota_hierarchy")
+    @mock.patch("nova.api.openstack.compute.quota_sets.sqlalchemy_api."
+                "quota_allocated_update")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_format_quota_set")
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_get_quotas")
+    @mock.patch('nova.api.validation.validators._SchemaValidator.validate')
+    def _test_quotas_update(self, validate_mock, get_quotas_mock,
+                            _format_quota_set_mock,
+                            quota_allocated_update_mock,
+                            _validate_quota_hierarchy_mock,
+                            _validate_quota_limit_mock,
+                            create_limit_mock,
+                            get_settable_quotas_mock,
+                            get_project_quotas_mock, get_project_mock,
+                            authorize_mock, body, result, project):
+
+        parent_quotas, child_quotas = self._prepare_quotas()
+        get_project_mock.return_value = project
+        authorize_mock.side_effect = None
+        create_limit_mock.side_effect = None
+        _validate_quota_limit_mock.side_effect = None
+        get_project_quotas_mock.side_effect = [parent_quotas,
+                                               child_quotas]
+        get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
+        _validate_quota_hierarchy_mock.return_value = 0
+        _format_quota_set_mock.return_value = result
+
+        req = self._get_http_request()
+        res_dict = self.controller.update(req, 'update_me', body=body)
+        self.assertEqual(body, res_dict)
+        self.assertTrue(create_limit_mock.called)
+        self.assertTrue(authorize_mock.called)
+        self.assertTrue(_validate_quota_limit_mock.called)
+        self.assertTrue(quota_allocated_update_mock.called)
+        self.assertTrue(get_quotas_mock.called)
+        self.assertEqual(len(self.default_quotas),
+                         len(create_limit_mock.mock_calls))
+
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_project_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_settable_quotas")
+    @mock.patch('nova.api.validation.validators._SchemaValidator.validate')
+    @mock.patch("nova.api.openstack.compute.quota_sets.objects."
+                "Quotas.create_limit")
+    def _test_quotas_update_bad_request(self, mock_create_limit,
+                                         mock_validate, get_settable_quotas_mock,
+                                         get_project_quotas_mock, get_project_mock,
+                                         authorize_mock, body):
+        self.default_quotas.update({
+            'instances': 50,
+            'cores': -50
+        })
+
+        class FakeProject(object):
+            def __init__(self, project_id, parent_id=None):
+                self.id = project_id
+                self.parent_id = parent_id
+
+        project = FakeProject(1, 2)
+        get_project_mock.return_value = project
+        authorize_mock.side_effect = None
+        parent_quotas, child_quotas = self._prepare_quotas()
+        get_project_quotas_mock.side_effect = [parent_quotas,
+                                               child_quotas]
+        get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
+
+        req = self._get_http_request()
+        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
+                          req, 'update_me', body=body)
+        self.assertEqual(0,
+                         len(mock_create_limit.mock_calls))
+
 
 class QuotaSetsTestV21(BaseQuotaSetsTest):
     plugin = quotas_v21
@@ -228,80 +341,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
         self.assertEqual(format_quotas_mock.called, 1)
         self.assertEqual(ref_quota_set, res_dict)
 
-    def _prepare_quotas(self):
-        parent_quotas = {}
-        child_quotas = {}
-
-        for key, value in six.iteritems(self.default_quotas):
-            parent_quotas[key] = {
-                'limit': value,
-                'in_use': value,
-                'reserved': value,
-                'child_hard_limits': value
-            }
-
-            child_quotas = {
-                'limit': value,
-                'in_use': value,
-                'reserved': value,
-                'child_hard_limits': value
-            }
-
-        return parent_quotas, child_quotas
-
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_authorize_update_or_delete")
-    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
-                "get_project")
-    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
-                "get_project_quotas")
-    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
-                "get_settable_quotas")
-    @mock.patch("nova.api.openstack.compute.quota_sets.objects."
-                "Quotas.create_limit")
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_validate_quota_limit")
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_validate_quota_hierarchy")
-    @mock.patch("nova.api.openstack.compute.quota_sets.sqlalchemy_api."
-                "quota_allocated_update")
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_format_quota_set")
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_get_quotas")
-    @mock.patch('nova.api.validation.validators._SchemaValidator.validate')
-    def _test_quotas_update(self, validate_mock, get_quotas_mock,
-                            _format_quota_set_mock,
-                            quota_allocated_update_mock,
-                            _validate_quota_hierarchy_mock,
-                            _validate_quota_limit_mock,
-                            create_limit_mock,
-                            get_settable_quotas_mock,
-                            get_project_quotas_mock, get_project_mock,
-                            authorize_mock, body, result, project):
-
-        parent_quotas, child_quotas = self._prepare_quotas()
-        get_project_mock.return_value = project
-        authorize_mock.side_effect = None
-        create_limit_mock.side_effect = None
-        _validate_quota_limit_mock.side_effect = None
-        get_project_quotas_mock.side_effect = [parent_quotas,
-                                               child_quotas]
-        get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
-        _validate_quota_hierarchy_mock.return_value = 0
-        _format_quota_set_mock.return_value = result
-
-        req = self._get_http_request()
-        res_dict = self.controller.update(req, 'update_me', body=body)
-        self.assertEqual(body, res_dict)
-        self.assertTrue(create_limit_mock.called)
-        self.assertTrue(authorize_mock.called)
-        self.assertTrue(_validate_quota_limit_mock.called)
-        self.assertTrue(quota_allocated_update_mock.called)
-        self.assertTrue(get_quotas_mock.called)
-        self.assertEqual(len(self.default_quotas),
-                         len(create_limit_mock.mock_calls))
-
     def test_quotas_update_success(self):
         class FakeProject(object):
             def __init__(self, project_id, parent_id=None):
@@ -364,45 +403,6 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
         self._test_quotas_update(body=body,
                                  result=quotas_result,
                                  project=project)
-
-    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
-                "_authorize_update_or_delete")
-    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
-                "get_project")
-    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
-                "get_project_quotas")
-    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
-                "get_settable_quotas")
-    @mock.patch('nova.api.validation.validators._SchemaValidator.validate')
-    @mock.patch("nova.api.openstack.compute.quota_sets.objects."
-                "Quotas.create_limit")
-    def _test_quotas_update_bad_request(self, mock_create_limit,
-                                         mock_validate, get_settable_quotas_mock,
-                                         get_project_quotas_mock, get_project_mock,
-                                         authorize_mock, body):
-        self.default_quotas.update({
-            'instances': 50,
-            'cores': -50
-        })
-
-        class FakeProject(object):
-            def __init__(self, project_id, parent_id=None):
-                self.id = project_id
-                self.parent_id = parent_id
-
-        project = FakeProject(1, 2)
-        get_project_mock.return_value = project
-        authorize_mock.side_effect = None
-        parent_quotas, child_quotas = self._prepare_quotas()
-        get_project_quotas_mock.side_effect = [parent_quotas,
-                                               child_quotas]
-        get_settable_quotas_mock.side_effect = self.fake_get_settable_quotas
-
-        req = self._get_http_request()
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.update,
-                          req, 'update_me', body=body)
-        self.assertEqual(0,
-                         len(mock_create_limit.mock_calls))
 
     def _quotas_update_bad_request_case(self, body):
         req = self._get_http_request()
