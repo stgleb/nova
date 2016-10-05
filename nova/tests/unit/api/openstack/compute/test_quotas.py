@@ -319,18 +319,27 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
                           self.controller._validate_quota_limit,
                           resource, db.MAX_INT + 1, -1, -1)
 
-    def test_quotas_defaults(self):
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_defaults")
+    def test_quotas_defaults(self, get_defaults_mock, get_project_mock,
+                             auth_mock):
         uri = '/v2/fake_tenant/os-quota-sets/fake_tenant/defaults'
-
+        project = FakeProject(1, 2)
+        get_project_mock.return_value = project
         req = fakes.HTTPRequest.blank(uri)
-        res_dict = self.controller.defaults(req, 'fake_tenant')
-        self.default_quotas.update({'id': 'fake_tenant'})
+        self.default_quotas.update({'id': str(project.id)})
+        get_defaults_mock.return_value = self.default_quotas
         expected = {'quota_set': self.default_quotas}
-
-        self.assertEqual(res_dict, expected)
+        res_dict = self.controller.defaults(req, project.id)
+        self.assertEqual(expected, res_dict)
+        self.assertTrue(get_defaults_mock.called)
+        self.assertTrue(get_project_mock.called)
 
     def test_quotas_show(self):
-        # Note: controller adds some bullshit in response
         project = FakeProject(1, 2)
 
         quotas = {'quota_set': {'cores': 20,
@@ -746,9 +755,27 @@ class QuotaSetsTestV236(test.NoDBTestCase):
         for filtered in self.filtered_quotas:
             self.assertNotIn(filtered, res_dict['quota_set'])
 
-    def test_quotas_default_filtered(self):
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_defaults")
+    def test_quotas_default_filtered(self, get_defaults_mock,
+                                     get_project_mock,
+                                     auth_mock):
         self._ensure_filtered_quotas_existed_in_old_api()
-        res_dict = self.controller.defaults(self.req, 1234)
+        response_body = {'cores': 100}
+        project = FakeProject(1, 2)
+        get_project_mock.return_value = project
+        response_body.update({'id': str(project.id)})
+        get_defaults_mock.return_value = response_body
+        expected = {'quota_set': response_body}
+        res_dict = self.controller.defaults(self.old_req, project.id)
+        self.assertEqual(expected, res_dict)
+        self.assertTrue(get_defaults_mock.called)
+        self.assertTrue(get_project_mock.called)
+
         for filtered in self.filtered_quotas:
             self.assertNotIn(filtered, res_dict['quota_set'])
 

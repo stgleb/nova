@@ -406,9 +406,19 @@ class QuotaSetsController(wsgi.Controller):
     def _defaults(self, req, id, filtered_quotas):
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'defaults', {'project_id': id})
-        values = QUOTAS.get_defaults(context)
+        try:
+            project = KEYSTONE.get_project(context, id)
+            parent_project_id = project.parent_id
+        except ksc_exceptions.Forbidden:
+            # NOTE(ericksonsantos): Keystone API v2 requires admin permissions
+            # for project_get method. We ignore Forbidden exception for
+            # non-admin users.
+            parent_project_id = None
+
+        values = QUOTAS.get_defaults(context,
+                                     parent_project_id=parent_project_id)
         return self._format_quota_set(id, values,
-            filtered_quotas=filtered_quotas)
+                                      filtered_quotas=filtered_quotas)
 
     # TODO(oomichi): Here should be 204(No Content) instead of 202 by v2.1
     # +microversions because the resource quota-set has been deleted completely
