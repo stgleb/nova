@@ -95,9 +95,7 @@ class BaseQuotaSetsTest(test.TestCase):
                           'maximum': -1},
         }
 
-    def get_delete_status_int(self, res):
-        # NOTE: on v2.1, http status code is set as wsgi_code of API
-        # method instead of status_int in a response object.
+    def get_delete_status_int(self):
         return self.controller.delete.wsgi_code
 
     @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
@@ -133,7 +131,7 @@ class BaseQuotaSetsTest(test.TestCase):
                 'child_hard_limits': value
             }
 
-            child_quotas = {
+            child_quotas[key] = {
                 'limit': value,
                 'in_use': value,
                 'reserved': value,
@@ -141,6 +139,53 @@ class BaseQuotaSetsTest(test.TestCase):
             }
 
         return parent_quotas, child_quotas
+
+    @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
+                "_authorize_update_or_delete")
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_project_quotas")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "destroy_all_by_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.sqlalchemy_api."
+                "quota_allocated_update")
+    def _test_quotas_delete_success(self, quota_allocated_update_mock,
+                                    destroy_all_by_project,
+                                    get_project_quotas_mock, get_project_mock,
+                                    authorize_mock, project,
+                                    req=None):
+        parent_quotas, child_quotas = self._prepare_quotas()
+
+        # Cleanup all child hard limits
+        for key, value in child_quotas.items():
+            if 'child_hard_limits' in child_quotas[key]:
+                del child_quotas[key]['child_hard_limits']
+
+        get_project_mock.return_value = project
+        authorize_mock.side_effect = None
+        get_project_quotas_mock.side_effect = [child_quotas, parent_quotas]
+        destroy_all_by_project.side_effect = self.fake_get_settable_quotas
+        self.controller.delete(req, project.id)
+
+        self.assertTrue(authorize_mock.called)
+        self.assertTrue(quota_allocated_update_mock.called)
+        self.assertEqual(202, self.get_delete_status_int())
+
+    @mock.patch("nova.api.openstack.compute.quota_sets.context.KEYSTONE."
+                "get_project")
+    @mock.patch("nova.api.openstack.compute.quota_sets.quota.QUOTAS."
+                "get_project_quotas")
+    def _test_quotas_delete_bad_request(self, get_project_quotas_mock,
+                                        get_project_mock, project,
+                                        req=None):
+        parent_quotas, child_quotas = self._prepare_quotas()
+        get_project_mock.return_value = project
+        get_project_quotas_mock.side_effect = [child_quotas, parent_quotas]
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.delete, req, project.id)
+        self.assertTrue(get_project_mock.called)
+        self.assertTrue(get_project_quotas_mock.called)
 
     @mock.patch("nova.api.openstack.compute.quota_sets.QuotaSetsController."
                 "_authorize_update_or_delete")
@@ -460,16 +505,15 @@ class QuotaSetsTestV21(BaseQuotaSetsTest):
         body = {'quota_set': self.default_quotas}
         self._test_quotas_update_bad_request(body=body)
 
-    def test_quotas_delete(self):
+    def test_quotas_delete_success(self):
         req = self._get_http_request()
-        self.mox.StubOutWithMock(quota.QUOTAS,
-                                 "destroy_all_by_project")
-        quota.QUOTAS.destroy_all_by_project(req.environ['nova.context'],
-                                            1234)
-        self.mox.ReplayAll()
-        res = self.controller.delete(req, 1234)
-        self.mox.VerifyAll()
-        self.assertEqual(202, self.get_delete_status_int(res))
+        project = FakeProject(1, 2)
+        self._test_quotas_delete_success(project=project, req=req)
+
+    def test_quotas_delete_fail(self):
+        req = self._get_http_request()
+        project = FakeProject(1, 2)
+        self._test_quotas_delete_bad_request(project=project, req=req)
 
     def test_update_network_quota_disabled(self):
         self.flags(enable_network_quota=False)
@@ -621,14 +665,8 @@ class UserQuotasTestV21(BaseQuotaSetsTest):
     def test_user_quotas_delete(self):
         url = '/v2/fake4/os-quota-sets/1234?user_id=1'
         req = self._get_http_request(url)
-        self.mox.StubOutWithMock(quota.QUOTAS,
-                                 "destroy_all_by_project_and_user")
-        quota.QUOTAS.destroy_all_by_project_and_user(
-            req.environ['nova.context'], 1234, '1')
-        self.mox.ReplayAll()
-        res = self.controller.delete(req, 1234)
-        self.mox.VerifyAll()
-        self.assertEqual(202, self.get_delete_status_int(res))
+        project = FakeProject(1, 2)
+        self._test_quotas_delete_success(project=project, req=req)
 
 
 class QuotaSetsPolicyEnforcementV21(test.NoDBTestCase):

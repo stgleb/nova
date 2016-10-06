@@ -426,11 +426,70 @@ class QuotaSetsController(wsgi.Controller):
     @extensions.expected_errors(403)
     @wsgi.response(202)
     def delete(self, req, id):
+        """Delete Quota for a particular tenant.
+
+        This works for hierarchical and non-hierarchical projects. For
+        hierarchical projects only immediate parent admin or the
+        CLOUD admin are able to perform a delete.
+
+        :param req: request
+        :param id: target project id that needs to be updated
+        """
         context = req.environ['nova.context']
         context.can(qs_policies.POLICY_ROOT % 'delete', {'project_id': id})
+
+        # Get the parent_id of the target project to verify whether we are
+        # dealing with hierarchical namespace or non-hierarchical namespace.
+        target_project = KEYSTONE.get_project(context, id)
+        parent_id = target_project.parent_id
         params = urlparse.parse_qs(req.environ.get('QUERY_STRING', ''))
         user_id = params.get('user_id', [None])[0]
-        if user_id:
+
+        try:
+            project_quotas = QUOTAS.get_project_quotas(
+                context, target_project.id, usages=True,
+                parent_project_id=parent_id, defaults=False)
+        except ksc_exceptions.NotAuthorized:
+            raise webob.exc.HTTPForbidden()
+
+        # If the project which is being deleted has allocated part of its
+        # quota to its subprojects, then subprojects' quotas should be
+        #  deleted first.
+        for key, value in project_quotas.items():
+                if 'child_hard_limits' in project_quotas[key].keys():
+                    if project_quotas[key]['child_hard_limits'] != 0:
+                        msg = _("About to delete child projects having "
+                                "non-zero quota. This should not be "
+                                "performed")
+                        raise webob.exc.HTTPBadRequest(explanation=msg)
+
+        if parent_id:
+            # Get the children of the project which the token is scoped to in
+            # order to know if the target_project is in its hierarchy.
+            context_project = KEYSTONE.get_project(context,
+                                                   context.project_id,
+                                                   subtree=True)
+            self._authorize_update_or_delete(context_project,
+                                             target_project.id,
+                                             parent_id)
+            parent_project_quotas = QUOTAS.get_project_quotas(
+                context, parent_id, parent_project_id=parent_id)
+
+            # Delete child quota first and later update parent's quota.
+            try:
+                QUOTAS.destroy_all_by_project(context, target_project.id)
+            except exception.AdminRequired:
+                raise webob.exc.HTTPForbidden()
+
+            # Update the allocated of the parent
+            for key, value in project_quotas.items():
+                project_hard_limit = project_quotas[key]['limit']
+                parent_allocated = (parent_project_quotas[key]
+                                    ['child_hard_limits'])
+                parent_allocated -= project_hard_limit
+                sqlalchemy_api.quota_allocated_update(context, parent_id, key,
+                                                      parent_allocated)
+        elif user_id:
             QUOTAS.destroy_all_by_project_and_user(context,
                                                    id, user_id)
         else:
